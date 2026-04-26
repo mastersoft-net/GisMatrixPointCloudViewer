@@ -69,22 +69,22 @@ export * from "./modules/CameraAnimation/CameraAnimation.js";
 
 export * from "./modules/loader/2.0/OctreeLoader.js";
 
-export {OrbitControls} from "./navigation/OrbitControls.js";
-export {FirstPersonControls} from "./navigation/FirstPersonControls.js";
-export {EarthControls} from "./navigation/EarthControls.js";
-export {DeviceOrientationControls} from "./navigation/DeviceOrientationControls.js";
-export {VRControls} from "./navigation/VRControls.js";
+export { OrbitControls } from "./navigation/OrbitControls.js";
+export { FirstPersonControls } from "./navigation/FirstPersonControls.js";
+export { EarthControls } from "./navigation/EarthControls.js";
+export { DeviceOrientationControls } from "./navigation/DeviceOrientationControls.js";
+export { VRControls } from "./navigation/VRControls.js";
 
 import "./extensions/OrthographicCamera.js";
 import "./extensions/PerspectiveCamera.js";
 import "./extensions/Ray.js";
 
-import {LRU} from "./LRU.js";
-import {OctreeLoader} from "./modules/loader/2.0/OctreeLoader.js";
-import {POCLoader} from "./loader/POCLoader.js";
-import {EptLoader} from "./loader/EptLoader.js";
-import {PointCloudOctree} from "./PointCloudOctree.js";
-import {WorkerPool} from "./WorkerPool.js";
+import { LRU } from "./LRU.js";
+import { OctreeLoader } from "./modules/loader/2.0/OctreeLoader.js";
+import { POCLoader } from "./loader/POCLoader.js";
+import { EptLoader } from "./loader/EptLoader.js";
+import { PointCloudOctree } from "./PointCloudOctree.js";
+import { WorkerPool } from "./WorkerPool.js";
 
 export const workerPool = new WorkerPool();
 
@@ -112,12 +112,12 @@ if (document.currentScript && document.currentScript.src) {
 	if (scriptPath.slice(-1) === '/') {
 		scriptPath = scriptPath.slice(0, -1);
 	}
-} else if(import.meta){
+} else if (import.meta) {
 	scriptPath = new URL(import.meta.url + "/..").href;
 	if (scriptPath.slice(-1) === '/') {
 		scriptPath = scriptPath.slice(0, -1);
 	}
-}else {
+} else {
 	console.error('Potree was unable to find its script path using document.currentScript. Is Potree included with a script tag? Does your browser support this function?');
 }
 
@@ -125,49 +125,55 @@ let resourcePath = scriptPath + '/resources';
 
 // scriptPath: build/potree
 // resourcePath:build/potree/resources
-export {scriptPath, resourcePath};
+export { scriptPath, resourcePath };
 
 
-export function loadPointCloud(path, name, callback){
-	let loaded = function(e){
+export function loadPointCloud(path, name, callback) {
+	let loaded = function (e) {
 		e.pointcloud.name = name;
 		callback(e);
 	};
 
-	let promise = new Promise( resolve => {
+	let promise = new Promise(resolve => {
+
+		// Support array of URLs for authenticated access (e.g., Firebase signed URLs).
+		// If 'path' is an array [metadataUrl, hierarchyUrl, octreeUrl], we extract the first 
+		// element to correctly check the file extension.
+		let pathStr = Array.isArray(path) ? path[0] : path;
 
 		// load pointcloud
-		if (!path){
+		if (!pathStr) {
 			// TODO: callback? comment? Hello? Bueller? Anyone?
-		} else if (path.indexOf('ept.json') > 0) {
-			EptLoader.load(path, function(geometry) {
+		} else if (pathStr.indexOf('ept.json') > 0) {
+			EptLoader.load(pathStr, function (geometry) { // Pass string representation
 				if (!geometry) {
-					console.error(new Error(`failed to load point cloud from URL: ${path}`));
+					console.error(new Error(`failed to load point cloud from URL: ${pathStr}`));
 				}
 				else {
 					let pointcloud = new PointCloudOctree(geometry);
 					//loaded(pointcloud);
-					resolve({type: 'pointcloud_loaded', pointcloud: pointcloud});
+					resolve({ type: 'pointcloud_loaded', pointcloud: pointcloud });
 				}
 			});
-		} else if (path.indexOf('cloud.js') > 0) {
-			POCLoader.load(path, function (geometry) {
+		} else if (pathStr.indexOf('cloud.js') > 0) {
+			POCLoader.load(pathStr, function (geometry) { // Pass string representation
 				if (!geometry) {
 					//callback({type: 'loading_failed'});
-					console.error(new Error(`failed to load point cloud from URL: ${path}`));
+					console.error(new Error(`failed to load point cloud from URL: ${pathStr}`));
 				} else {
 					let pointcloud = new PointCloudOctree(geometry);
 					// loaded(pointcloud);
-					resolve({type: 'pointcloud_loaded', pointcloud: pointcloud});
+					resolve({ type: 'pointcloud_loaded', pointcloud: pointcloud });
 				}
 			});
-		} else if (path.indexOf('metadata.json') > 0) {
+		} else if (pathStr.indexOf('metadata.json') > 0) {
+			// Pass the original 'path' variable (which can be an array) to Potree.OctreeLoader
 			Potree.OctreeLoader.load(path).then(e => {
 				let geometry = e.geometry;
 
-				if(!geometry){
-					console.error(new Error(`failed to load point cloud from URL: ${path}`));
-				}else{
+				if (!geometry) {
+					console.error(new Error(`failed to load point cloud from URL: ${pathStr} ${path}`));
+				} else {
 					let pointcloud = new PointCloudOctree(geometry);
 
 					let aPosition = pointcloud.getAttribute("position");
@@ -179,51 +185,51 @@ export function loadPointCloud(path, name, callback){
 					];
 
 					// loaded(pointcloud);
-					resolve({type: 'pointcloud_loaded', pointcloud: pointcloud});
+					resolve({ type: 'pointcloud_loaded', pointcloud: pointcloud });
 				}
 			});
 
-			OctreeLoader.load(path, function (geometry) {
+			OctreeLoader.load(path, function (geometry) { // Pass the original array/string
 				if (!geometry) {
 					//callback({type: 'loading_failed'});
-					console.error(new Error(`failed to load point cloud from URL: ${path}`));
+					console.error(new Error(`failed to load point cloud from URL: ${pathStr}`));
 				} else {
 					let pointcloud = new PointCloudOctree(geometry);
 					// loaded(pointcloud);
-					resolve({type: 'pointcloud_loaded', pointcloud: pointcloud});
+					resolve({ type: 'pointcloud_loaded', pointcloud: pointcloud });
 				}
 			});
-		} else if (path.indexOf('.vpc') > 0) {
-			PointCloudArena4DGeometry.load(path, function (geometry) {
+		} else if (pathStr.indexOf('.vpc') > 0) {
+			PointCloudArena4DGeometry.load(pathStr, function (geometry) { // Pass string representation
 				if (!geometry) {
 					//callback({type: 'loading_failed'});
-					console.error(new Error(`failed to load point cloud from URL: ${path}`));
+					console.error(new Error(`failed to load point cloud from URL: ${pathStr}`));
 				} else {
 					let pointcloud = new PointCloudArena4D(geometry);
 					// loaded(pointcloud);
-					resolve({type: 'pointcloud_loaded', pointcloud: pointcloud});
+					resolve({ type: 'pointcloud_loaded', pointcloud: pointcloud });
 				}
 			});
 		} else {
 			//callback({'type': 'loading_failed'});
-			console.error(new Error(`failed to load point cloud from URL: ${path}`));
+			console.error(new Error(`failed to load point cloud from URL: ${pathStr}`));
 		}
 	});
 
-	if(callback){
+	if (callback) {
 		promise.then(pointcloud => {
 			loaded(pointcloud);
 		});
-	}else{
+	} else {
 		return promise;
 	}
 };
 
 
 // add selectgroup
-(function($){
+(function ($) {
 	$.fn.extend({
-		selectgroup: function(args = {}){
+		selectgroup: function (args = {}) {
 
 			let elGroup = $(this);
 			let rootID = elGroup.prop("id");
@@ -245,12 +251,12 @@ export function loadPointCloud(path, name, callback){
 				let elLabel = elButton.find("label");
 				let elInput = elButton.find("input");
 
-				elInput.change( () => {
+				elInput.change(() => {
 					elGroup.find("label").removeClass("ui-state-active");
 					elGroup.find("label").addClass("ui-state-default");
-					if(elInput.is(":checked")){
+					if (elInput.is(":checked")) {
 						elLabel.addClass("ui-state-active");
-					}else{
+					} else {
 						//elLabel.addClass("ui-state-default");
 					}
 				});
@@ -268,21 +274,21 @@ export function loadPointCloud(path, name, callback){
 			`);
 
 			let elButtonContainer = elFieldset.find("span");
-			for(let elButton of elButtons){
+			for (let elButton of elButtons) {
 				elButtonContainer.append(elButton);
 			}
 
-			elButtonContainer.find("label").each( (index, value) => {
+			elButtonContainer.find("label").each((index, value) => {
 				$(value).css("margin", "0px");
 				$(value).css("border-radius", "0px");
 				$(value).css("border", "1px solid black");
 				$(value).css("border-left", "none");
 			});
-			elButtonContainer.find("label:first").each( (index, value) => {
+			elButtonContainer.find("label:first").each((index, value) => {
 				$(value).css("border-radius", "4px 0px 0px 4px");
 
 			});
-			elButtonContainer.find("label:last").each( (index, value) => {
+			elButtonContainer.find("label:last").each((index, value) => {
 				$(value).css("border-radius", "0px 4px 4px 0px");
 				$(value).css("border-left", "none");
 			});

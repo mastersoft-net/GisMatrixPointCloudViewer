@@ -164,7 +164,7 @@ gulp.task('build',
 		async function(done){
 			gulp.src(paths.html).pipe(gulp.dest('build/potree'));
 
-			gulp.src(paths.resources).pipe(gulp.dest('build/potree/resources'));
+			gulp.src(paths.resources, { encoding: false, allowEmpty: true }).pipe(gulp.dest('build/potree/resources'));
 
 			gulp.src(["LICENSE"]).pipe(gulp.dest('build/potree'));
 
