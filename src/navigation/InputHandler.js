@@ -9,15 +9,25 @@ import {KeyCodes} from "../KeyCodes.js";
 import {Utils} from "../utils.js";
 import {EventDispatcher} from "../EventDispatcher.js";
 
+/**
+ * Handles all user inputs (mouse, keyboard, touch) and distributes events
+ * to the appropriate listeners and 3D objects in the Potree scene.
+ */
 export class InputHandler extends EventDispatcher {
-	constructor (viewer) {
+
+	/**
+	 * Initializes the InputHandler and adds event listeners for mouse, keyboard, and touch events.
+	 * 
+	 * @param {Object} viewer - The Potree viewer instance.
+	 */
+	constructor(viewer) {
 		super();
 
 		this.viewer = viewer;
 		this.renderer = viewer.renderer;
 		this.domElement = this.renderer.domElement;
 		this.enabled = true;
-		
+
 		this.scene = null;
 		this.interactiveScenes = [];
 		this.interactiveObjects = new Set();
@@ -26,6 +36,13 @@ export class InputHandler extends EventDispatcher {
 
 		this.drag = null;
 		this.mouse = new THREE.Vector2(0, 0);
+
+		// Variables for synthetic double-tap detection on mobile
+		/** @type {number} Timestamp of the last touch event to detect rapid consecutive taps. */
+		this.lastTouchTime = 0;
+		/** @type {THREE.Vector2} Screen position of the last touch to ensure the double tap is in the same spot. */
+		this.lastTouchPosition = new THREE.Vector2(0, 0);
+		//-------------------------------------------------------------------------
 
 		this.selection = [];
 
@@ -42,31 +59,32 @@ export class InputHandler extends EventDispatcher {
 			this.domElement.tabIndex = 2222;
 		}
 
+		// Note: Added { passive: false } to properly support e.preventDefault() on modern mobile browsers
 		this.domElement.addEventListener('contextmenu', (event) => { event.preventDefault(); }, false);
 		this.domElement.addEventListener('click', this.onMouseClick.bind(this), false);
 		this.domElement.addEventListener('mousedown', this.onMouseDown.bind(this), false);
 		this.domElement.addEventListener('mouseup', this.onMouseUp.bind(this), false);
 		this.domElement.addEventListener('mousemove', this.onMouseMove.bind(this), false);
-		this.domElement.addEventListener('mousewheel', this.onMouseWheel.bind(this), false);
-		this.domElement.addEventListener('DOMMouseScroll', this.onMouseWheel.bind(this), false); // Firefox
+		this.domElement.addEventListener('mousewheel', this.onMouseWheel.bind(this), { passive: false });
+		this.domElement.addEventListener('DOMMouseScroll', this.onMouseWheel.bind(this), { passive: false }); // Firefox
 		this.domElement.addEventListener('dblclick', this.onDoubleClick.bind(this));
 		this.domElement.addEventListener('keydown', this.onKeyDown.bind(this));
 		this.domElement.addEventListener('keyup', this.onKeyUp.bind(this));
-		this.domElement.addEventListener('touchstart', this.onTouchStart.bind(this));
+		this.domElement.addEventListener('touchstart', this.onTouchStart.bind(this), { passive: false });
 		this.domElement.addEventListener('touchend', this.onTouchEnd.bind(this));
-		this.domElement.addEventListener('touchmove', this.onTouchMove.bind(this));
+		this.domElement.addEventListener('touchmove', this.onTouchMove.bind(this), { passive: false });
 	}
 
-	addInputListener (listener) {
+	addInputListener(listener) {
 		this.inputListeners.push(listener);
 	}
 
-	removeInputListener (listener) {
+	removeInputListener(listener) {
 		this.inputListeners = this.inputListeners.filter(e => e !== listener);
 	}
 
-	getSortedListeners(){
-		return this.inputListeners.sort( (a, b) => {
+	getSortedListeners() {
+		return this.inputListeners.sort((a, b) => {
 			let ia = (a.importance !== undefined) ? a.importance : 0;
 			let ib = (b.importance !== undefined) ? b.importance : 0;
 
@@ -74,21 +92,73 @@ export class InputHandler extends EventDispatcher {
 		});
 	}
 
-	onTouchStart (e) {
+	/**
+	 * Handles touch start events on the canvas.
+	 * Prevents default browser behaviors and implements synthetic double-tap detection 
+	 * for mobile devices to trigger double-click functionalities (e.g., zooming to a point).
+	 *
+	 * @param {TouchEvent} e - The native browser touch event.
+	 */
+	onTouchStart(e) {
 		if (this.logMessages) console.log(this.constructor.name + ': onTouchStart');
 
 		e.preventDefault();
 
+		let isDoubleTap = false;
+
 		if (e.touches.length === 1) {
 			let rect = this.domElement.getBoundingClientRect();
-			let x = e.touches[0].pageX - rect.left;
-			let y = e.touches[0].pageY - rect.top;
+
+			// Changed pageX/pageY to clientX/clientY!
+			// On Android, pageX/pageY includes document offsets caused by hiding the address bar,
+			// which shifts the picking raycast and causes double-tap to miss the point cloud entirely.
+			// clientX/clientY are accurately relative to the viewport.
+			let x = e.touches[0].clientX - rect.left;
+			let y = e.touches[0].clientY - rect.top;
 			this.mouse.set(x, y);
 
-			this.startDragging(null);
+			// Update hovered elements on touch so double-tapping on markers works properly.
+			this.hoveredElements = this.getHoveredElements();
+
+			// Synthetic Double Tap Detection
+			let now = performance.now();
+			let timeDelta = now - this.lastTouchTime;
+
+			// Thresholds: Maximum 500ms between taps, and maximum 60 pixels of movement 
+			// Increased to 60px to properly support high-DPI Android displays.
+			if (timeDelta > 0 && timeDelta < 500) {
+				let distance = this.mouse.distanceTo(this.lastTouchPosition);
+
+				if (distance < 60) {
+					isDoubleTap = true;
+				}
+			}
+
+			if (isDoubleTap) {
+				// Distance and time constraints are met: it's a valid double tap.
+				let fakeEvent = { preventDefault: () => { } };
+				this.onDoubleClick(fakeEvent);
+
+				// Reset the timer to prevent triple-taps from registering as two double-taps.
+				this.lastTouchTime = 0;
+
+				// CRITICAL FIX FOR ANDROID:
+				// Do NOT start dragging on a double tap. If we do, the sensitive Android touchscreen
+				// will likely fire a 'touchmove' event milliseconds later. This triggers a drag event,
+				// which tells OrbitControls to immediately abort the zoom-in animation!
+				this.drag = null;
+			} else {
+				// Normal tap: register as a new first tap.
+				this.lastTouchTime = now;
+				this.lastTouchPosition.copy(this.mouse);
+
+				// Initialize dragging state for rotation/panning
+				this.startDragging(null);
+			}
+			
 		}
 
-		
+
 		for (let inputListener of this.getSortedListeners()) {
 			inputListener.dispatchEvent({
 				type: e.type,
@@ -98,17 +168,22 @@ export class InputHandler extends EventDispatcher {
 		}
 	}
 
-	onTouchEnd (e) {
+	onTouchEnd(e) {
 		if (this.logMessages) console.log(this.constructor.name + ': onTouchEnd');
 
-		e.preventDefault();
+		if (e && e.preventDefault) {
+			e.preventDefault();
+		}
 
-		for (let inputListener of this.getSortedListeners()) {
-			inputListener.dispatchEvent({
-				type: 'drop',
-				drag: this.drag,
-				viewer: this.viewer
-			});
+		// Only dispatch drop if dragging was actually started
+		if (this.drag) {
+			for (let inputListener of this.getSortedListeners()) {
+				inputListener.dispatchEvent({
+					type: 'drop',
+					drag: this.drag,
+					viewer: this.viewer
+				});
+			}
 		}
 
 		this.drag = null;
@@ -122,17 +197,25 @@ export class InputHandler extends EventDispatcher {
 		}
 	}
 
-	onTouchMove (e) {
+	/**
+	 * Handles touch move events on the canvas.
+	 *
+	 * @param {TouchEvent} e - The native browser touch event.
+	 */
+	onTouchMove(e) {
 		if (this.logMessages) console.log(this.constructor.name + ': onTouchMove');
 
 		e.preventDefault();
 
 		if (e.touches.length === 1) {
 			let rect = this.domElement.getBoundingClientRect();
-			let x = e.touches[0].pageX - rect.left;
-			let y = e.touches[0].pageY - rect.top;
+
+			// Changed pageX/pageY to clientX/clientY!
+			let x = e.touches[0].clientX - rect.left;
+			let y = e.touches[0].clientY - rect.top;
 			this.mouse.set(x, y);
 
+			// Proceed only if a drag operation is active
 			if (this.drag) {
 				this.drag.mouse = 1;
 
@@ -159,21 +242,9 @@ export class InputHandler extends EventDispatcher {
 				changedTouches: e.changedTouches
 			});
 		}
-
-		// DEBUG CODE
-		// let debugTouches = [...e.touches, {
-		//	pageX: this.domElement.clientWidth / 2,
-		//	pageY: this.domElement.clientHeight / 2}];
-		// for(let inputListener of this.getSortedListeners()){
-		//	inputListener.dispatchEvent({
-		//		type: e.type,
-		//		touches: debugTouches,
-		//		changedTouches: e.changedTouches
-		//	});
-		// }
 	}
 
-	onKeyDown (e) {
+	onKeyDown(e) {
 		if (this.logMessages) console.log(this.constructor.name + ': onKeyDown');
 
 		// DELETE
@@ -192,20 +263,10 @@ export class InputHandler extends EventDispatcher {
 			event: e
 		});
 
-		// for(let l of this.getSortedListeners()){
-		//	l.dispatchEvent({
-		//		type: "keydown",
-		//		keyCode: e.keyCode,
-		//		event: e
-		//	});
-		// }
-
 		this.pressedKeys[e.keyCode] = true;
-
-		// e.preventDefault();
 	}
 
-	onKeyUp (e) {
+	onKeyUp(e) {
 		if (this.logMessages) console.log(this.constructor.name + ': onKeyUp');
 
 		delete this.pressedKeys[e.keyCode];
@@ -213,7 +274,14 @@ export class InputHandler extends EventDispatcher {
 		e.preventDefault();
 	}
 
-	onDoubleClick (e) {
+	/**
+	 * Handles double click (and synthetic double-tap) events.
+	 * Propagates the double click to hovered elements or registered input listeners
+	 * (such as OrbitControls or EarthControls for pivot focusing/zooming).
+	 *
+	 * @param {MouseEvent|TouchEvent|Object} [e] - The native browser mouse/touch event or synthetic fake event.
+	 */
+	onDoubleClick(e) {
 		if (this.logMessages) console.log(this.constructor.name + ': onDoubleClick');
 
 		let consumed = false;
@@ -239,16 +307,19 @@ export class InputHandler extends EventDispatcher {
 			}
 		}
 
-		e.preventDefault();
+		// Ensure compatibility whether it is a native mouse event or our synthetic touch object
+		if (e && e.preventDefault) {
+			e.preventDefault();
+		}
 	}
 
-	onMouseClick (e) {
+	onMouseClick(e) {
 		if (this.logMessages) console.log(this.constructor.name + ': onMouseClick');
 
 		e.preventDefault();
 	}
 
-	onMouseDown (e) {
+	onMouseDown(e) {
 		if (this.logMessages) console.log(this.constructor.name + ': onMouseDown');
 
 		e.preventDefault();
@@ -263,8 +334,8 @@ export class InputHandler extends EventDispatcher {
 					mouse: this.mouse
 				});
 			}
-		}else{
-			for(let hovered of this.hoveredElements){
+		} else {
+			for (let hovered of this.hoveredElements) {
 				let object = hovered.object;
 				object.dispatchEvent({
 					type: 'mousedown',
@@ -272,7 +343,7 @@ export class InputHandler extends EventDispatcher {
 					consume: consume
 				});
 
-				if(consumed){
+				if (consumed) {
 					break;
 				}
 			}
@@ -286,7 +357,7 @@ export class InputHandler extends EventDispatcher {
 					el.object._listeners['drag'].length > 0));
 
 			if (target) {
-				this.startDragging(target.object, {location: target.point});
+				this.startDragging(target.object, { location: target.point });
 			} else {
 				this.startDragging(null);
 			}
@@ -297,14 +368,14 @@ export class InputHandler extends EventDispatcher {
 		}
 	}
 
-	onMouseUp (e) {
+	onMouseUp(e) {
 		if (this.logMessages) console.log(this.constructor.name + ': onMouseUp');
 
 		e.preventDefault();
 
 		let noMovement = this.getNormalizedDrag().length() === 0;
 
-		
+
 		let consumed = false;
 		let consume = () => { return consumed = true; };
 		if (this.hoveredElements.length === 0) {
@@ -316,15 +387,15 @@ export class InputHandler extends EventDispatcher {
 					consume: consume
 				});
 
-				if(consumed){
+				if (consumed) {
 					break;
 				}
 			}
-		}else{
+		} else {
 			let hovered = this.hoveredElements
 				.map(e => e.object)
 				.find(e => (e._listeners && e._listeners['mouseup']));
-			if(hovered){
+			if (hovered) {
 				hovered.dispatchEvent({
 					type: 'mouseup',
 					viewer: this.viewer,
@@ -354,7 +425,7 @@ export class InputHandler extends EventDispatcher {
 
 			// check for a click
 			let clicked = this.hoveredElements.map(h => h.object).find(v => v === this.drag.object) !== undefined;
-			if(clicked){
+			if (clicked) {
 				if (this.logMessages) console.log(`${this.constructor.name}: click ${this.drag.object.name}`);
 				this.drag.object.dispatchEvent({
 					type: 'click',
@@ -366,7 +437,7 @@ export class InputHandler extends EventDispatcher {
 			this.drag = null;
 		}
 
-		if(!consumed){
+		if (!consumed) {
 			if (e.button === THREE.MOUSE.LEFT) {
 				if (noMovement) {
 					let selectable = this.hoveredElements
@@ -393,7 +464,7 @@ export class InputHandler extends EventDispatcher {
 		}
 	}
 
-	onMouseMove (e) {
+	onMouseMove(e) {
 		e.preventDefault();
 
 		let rect = this.domElement.getBoundingClientRect();
@@ -402,7 +473,7 @@ export class InputHandler extends EventDispatcher {
 		this.mouse.set(x, y);
 
 		let hoveredElements = this.getHoveredElements();
-		if(hoveredElements.length > 0){
+		if (hoveredElements.length > 0) {
 			let names = hoveredElements.map(h => h.object.name).join(", ");
 			if (this.logMessages) console.log(`${this.constructor.name}: onMouseMove; hovered: '${names}'`);
 		}
@@ -431,27 +502,27 @@ export class InputHandler extends EventDispatcher {
 						type: 'drag',
 						drag: this.drag,
 						viewer: this.viewer,
-						consume: () => {dragConsumed = true;}
+						consume: () => { dragConsumed = true; }
 					});
 
-					if(dragConsumed){
+					if (dragConsumed) {
 						break;
 					}
 				}
 			}
-		}else{
+		} else {
 			let curr = hoveredElements.map(a => a.object).find(a => true);
 			let prev = this.hoveredElements.map(a => a.object).find(a => true);
 
-			if(curr !== prev){
-				if(curr){
+			if (curr !== prev) {
+				if (curr) {
 					if (this.logMessages) console.log(`${this.constructor.name}: mouseover: ${curr.name}`);
 					curr.dispatchEvent({
 						type: 'mouseover',
 						object: curr,
 					});
 				}
-				if(prev){
+				if (prev) {
 					if (this.logMessages) console.log(`${this.constructor.name}: mouseleave: ${prev.name}`);
 					prev.dispatchEvent({
 						type: 'mouseleave',
@@ -460,12 +531,12 @@ export class InputHandler extends EventDispatcher {
 				}
 			}
 
-			if(hoveredElements.length > 0){
+			if (hoveredElements.length > 0) {
 				let object = hoveredElements
 					.map(e => e.object)
 					.find(e => (e._listeners && e._listeners['mousemove']));
-				
-				if(object){
+
+				if (object) {
 					object.dispatchEvent({
 						type: 'mousemove',
 						object: object
@@ -474,24 +545,18 @@ export class InputHandler extends EventDispatcher {
 			}
 
 		}
-		
-		// for (let inputListener of this.getSortedListeners()) {
-		// 	inputListener.dispatchEvent({
-		// 		type: 'mousemove',
-		// 		object: null
-		// 	});
-		// }
-		
 
 		this.hoveredElements = hoveredElements;
 	}
-	
-	onMouseWheel(e){
-		if(!this.enabled) return;
 
-		if(this.logMessages) console.log(this.constructor.name + ": onMouseWheel");
-		
-		e.preventDefault();
+	onMouseWheel(e) {
+		if (!this.enabled) return;
+
+		if (this.logMessages) console.log(this.constructor.name + ": onMouseWheel");
+
+		if (e && e.preventDefault) {
+			e.preventDefault();
+		}
 
 		let delta = 0;
 		if (e.wheelDelta !== undefined) { // WebKit / Opera / Explorer 9
@@ -501,8 +566,6 @@ export class InputHandler extends EventDispatcher {
 		}
 
 		let ndelta = Math.sign(delta);
-
-		// this.wheelDelta += Math.sign(delta);
 
 		if (this.hoveredElement) {
 			this.hoveredElement.object.dispatchEvent({
@@ -521,7 +584,7 @@ export class InputHandler extends EventDispatcher {
 		}
 	}
 
-	startDragging (object, args = null) {
+	startDragging(object, args = null) {
 
 		let name = object ? object.name : "no name";
 		if (this.logMessages) console.log(`${this.constructor.name}: startDragging: '${name}'`);
@@ -541,15 +604,15 @@ export class InputHandler extends EventDispatcher {
 		}
 	}
 
-	getMousePointCloudIntersection (mouse) {
+	getMousePointCloudIntersection(mouse) {
 		return Utils.getMousePointCloudIntersection(
-			this.mouse, 
-			this.scene.getActiveCamera(), 
-			this.viewer, 
+			this.mouse,
+			this.scene.getActiveCamera(),
+			this.viewer,
 			this.scene.pointclouds);
 	}
 
-	toggleSelection (object) {
+	toggleSelection(object) {
 		let oldSelection = this.selection;
 
 		let index = this.selection.indexOf(object);
@@ -573,13 +636,13 @@ export class InputHandler extends EventDispatcher {
 		});
 	}
 
-	deselect(object){
+	deselect(object) {
 
 		let oldSelection = this.selection;
 
 		let index = this.selection.indexOf(object);
 
-		if(index >= 0){
+		if (index >= 0) {
 			this.selection.splice(index, 1);
 			object.dispatchEvent({
 				type: 'deselect'
@@ -593,7 +656,7 @@ export class InputHandler extends EventDispatcher {
 		}
 	}
 
-	deselectAll () {
+	deselectAll() {
 		for (let object of this.selection) {
 			object.dispatchEvent({
 				type: 'deselect'
@@ -612,35 +675,35 @@ export class InputHandler extends EventDispatcher {
 		}
 	}
 
-	isSelected (object) {
+	isSelected(object) {
 		let index = this.selection.indexOf(object);
 
 		return index !== -1;
 	}
 
-	registerInteractiveObject(object){
+	registerInteractiveObject(object) {
 		this.interactiveObjects.add(object);
 	}
 
-	removeInteractiveObject(object){
+	removeInteractiveObject(object) {
 		this.interactiveObjects.delete(object);
 	}
 
-	registerInteractiveScene (scene) {
+	registerInteractiveScene(scene) {
 		let index = this.interactiveScenes.indexOf(scene);
 		if (index === -1) {
 			this.interactiveScenes.push(scene);
 		}
 	}
 
-	unregisterInteractiveScene (scene) {
+	unregisterInteractiveScene(scene) {
 		let index = this.interactiveScenes.indexOf(scene);
 		if (index > -1) {
 			this.interactiveScenes.splice(index, 1);
 		}
 	}
 
-	getHoveredElement () {
+	getHoveredElement() {
 		let hoveredElements = this.getHoveredElements();
 		if (hoveredElements.length > 0) {
 			return hoveredElements[0];
@@ -649,7 +712,7 @@ export class InputHandler extends EventDispatcher {
 		}
 	}
 
-	getHoveredElements () {
+	getHoveredElements() {
 		let scenes = this.interactiveScenes.concat(this.scene.scene);
 
 		let interactableListeners = ['mouseup', 'mousemove', 'mouseover', 'mouseleave', 'drag', 'drop', 'click', 'select', 'deselect'];
@@ -667,10 +730,10 @@ export class InputHandler extends EventDispatcher {
 				}
 			});
 		}
-		
+
 		let camera = this.scene.getActiveCamera();
 		let ray = Utils.mouseToRay(this.mouse, camera, this.domElement.clientWidth, this.domElement.clientHeight);
-		
+
 		let raycaster = new THREE.Raycaster();
 		raycaster.ray.set(ray.origin, ray.direction);
 		raycaster.params.Line.threshold = 0.2;
@@ -680,17 +743,17 @@ export class InputHandler extends EventDispatcher {
 		return intersections;
 	}
 
-	setScene (scene) {
+	setScene(scene) {
 		this.deselectAll();
 
 		this.scene = scene;
 	}
 
-	update (delta) {
+	update(delta) {
 
 	}
 
-	getNormalizedDrag () {
+	getNormalizedDrag() {
 		if (!this.drag) {
 			return new THREE.Vector2(0, 0);
 		}
@@ -703,7 +766,7 @@ export class InputHandler extends EventDispatcher {
 		return diff;
 	}
 
-	getNormalizedLastDrag () {
+	getNormalizedLastDrag() {
 		if (!this.drag) {
 			return new THREE.Vector2(0, 0);
 		}
